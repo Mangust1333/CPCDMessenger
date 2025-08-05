@@ -6,100 +6,129 @@
 #include <stdexcept>
 #include <sys/stat.h>
 #include <cstdlib>
+#include "vector"
 
-namespace fs = std::filesystem;
-
-bool change_permissions(const std::string& path, const std::string& mode) {
-    std::string command = "chmod " + mode + " " + path;
-    int result = std::system(command.c_str());
-    return result == 0;
-}
-
-// Функция для получения текущих прав доступа
-std::string get_current_permissions(const std::string& path) {
-    struct stat info;
-    if (stat(path.c_str(), &info) != 0) {
-        throw std::runtime_error("Не удалось получить права доступа к файлу");
-    }
-
-    // Формируем строку с правами доступа в восьмеричном формате
-    char permissions[10];
-    snprintf(permissions, sizeof(permissions), "%o", info.st_mode & 0777);
-    return std::string(permissions);
-}
-
-void create_and_write_file(const std::string& text, const std::string& file_path) {
-    std::string original_permissions;
-    fs::path dir_path = fs::path(file_path).parent_path();
-    if (fs::exists(dir_path)) {
-        original_permissions = get_current_permissions(dir_path.string());
-    }
-    try {
-
-        // Создаем директорию, если она не существует
-        if (!fs::exists(dir_path)) {
-            fs::create_directories(dir_path);
+namespace FileParser {
+    class FileBlockIterator {
+    public:
+        FileBlockIterator(const char* path, std::size_t blockSize)
+            : path_(path), in_(path, std::ios::binary), blockSize_(blockSize), position_(0)
+        {
+            if (!in_) {
+                throw std::runtime_error("Failed to open file");
+            }
+            ++(*this);
         }
 
-        // Пытаемся открыть файл для записи
-        std::ofstream file(file_path);
-        if (!file.is_open()) {
-            throw std::runtime_error("Не удалось открыть файл для записи");
+        ~FileBlockIterator() {
+            if (in_.is_open()) {
+                in_.close();
+            }
         }
 
-        // Записываем текст в файл
-        file << text;
-
-        // Закрываем файл
-        file.close();
-
-        std::cout << "Файл успешно создан и запись завершена: " << file_path << std::endl;
-
-        // Восстанавливаем права доступа директории
-        if (!original_permissions.empty()) {
-            change_permissions(dir_path.string(), original_permissions);
+        FileBlockIterator(const FileBlockIterator& other)
+        : path_(other.path_), blockSize_(other.blockSize_),
+        buffer_(other.buffer_), position_(other.position_)
+        {
+            in_.open(path_, std::ios::binary);
+            if (!in_) {
+                throw std::runtime_error("Failed to open file in copy constructor");
+            }
+            in_.seekg(position_);
         }
 
-    } catch (const fs::filesystem_error& e) {
-        std::cerr << "Ошибка файловой системы: " << e.what() << std::endl;
+        FileBlockIterator& operator=(const FileBlockIterator& other) {
+            if(&other == this) {
+                return *this;
+            }
 
-        // Попытка изменить права доступа к директории
-        if (change_permissions(dir_path.string(), "777")) {
-            std::cerr << "Права доступа к директории изменены. Повторная попытка..." << std::endl;
+            if (in_.is_open()) {
+                in_.close();
+            }
 
-            // Повторная попытка создания и записи файла после изменения прав
-            create_and_write_file(text, file_path);
-        } else {
-            std::cerr << "Не удалось изменить права доступа к директории: " << dir_path.string() << std::endl;
+            path_ = other.path_;
+            buffer_ = other.buffer_;
+            blockSize_ = other.blockSize_;
+            position_ = other.position_;
+            in_.open(path_, std::ios::binary);
+            if (!in_) {
+                throw std::runtime_error("Failed to open file in copy assignment");
+            }
+            in_.seekg(position_);
+
+            return *this;
         }
-    } catch (const std::runtime_error& e) {
-        std::cerr << "Ошибка: " << e.what() << std::endl;
 
-        // Попытка изменить права доступа к файлу, если файл был создан, но не открыт
-        if (fs::exists(file_path) && change_permissions(file_path, "777")) {
-            std::cerr << "Права доступа к файлу изменены. Повторная попытка..." << std::endl;
-
-            // Повторная попытка создания и записи файла после изменения прав
-            create_and_write_file(text, file_path);
-        } else {
-            std::cerr << "Не удалось изменить права доступа к файлу: " << file_path << std::endl;
+        FileBlockIterator(FileBlockIterator&& other) noexcept :
+        path_(std::move(other.path_)),
+        in_(std::move(other.in_)),
+        buffer_(std::move(other.buffer_)),
+        blockSize_(other.blockSize_),
+        position_(other.position_)
+        {
+            other.blockSize_ = 0;
+            other.position_ = 0;
         }
-    }
 
-    // Восстанавливаем права доступа файла, если они были изменены
-    if (fs::exists(file_path)) {
-        std::string file_permissions = get_current_permissions(file_path);
-        if (file_permissions != "777") {
-            change_permissions(file_path, original_permissions);
+        FileBlockIterator& operator=(FileBlockIterator&& other) noexcept {
+            if(this == &other) {
+                return *this;
+            }
+
+            path_ = std::move(other.path_);
+            in_ = std::move(other.in_);
+            buffer_ = std::move(other.buffer_);
+            blockSize_ = other.blockSize_;
+            position_ = other.position_;
+
+            other.blockSize_ = 0;
+            other.position_ = 0;
+
+            return *this;
         }
-    }
-}
 
-int main() {
-    std::string text = "Пример текста для записи в файл.";
-    std::string file_path = "/путь/к/файлу/файл.txt";
+        FileBlockIterator operator++(int) {
+            FileBlockIterator tmp = *this;
+            readBlock();
+            return tmp;
+        }
 
-    create_and_write_file(text, file_path);
+        FileBlockIterator& operator++() {
+            readBlock();
+            return *this;
+        }
 
-    return 0;
+        const std::vector<char>& operator*() const { return buffer_; }
+
+        bool operator==(const FileBlockIterator& other) const {
+            return position_ == other.position_;
+        }
+
+        bool operator!=(const FileBlockIterator& other) const {
+            return !(*this == other);
+        }
+
+
+
+    private:
+        void readBlock() {
+            if (!in_ || in_.eof()) {
+                buffer_.clear();
+                return;
+            }
+
+            buffer_.assign(blockSize_, '\0');
+            in_.read(buffer_.data(), blockSize_);
+            buffer_.resize(in_.gcount());
+            position_ = in_.tellg();
+        }
+
+        std::string path_;
+        std::ifstream in_;
+        std::vector<char> buffer_;
+        std::size_t blockSize_;
+        std::streampos position_;
+    };
+
+
 }
