@@ -1,7 +1,3 @@
-//
-// Created by Vlad on 05.08.2024.
-//
-//std::cout << ((typeid(*arguments.back()) == typeid(ArgParser::IntArgument)) ? "true" : "false") << '\n';
 #include "argument_parser.h"
 
 namespace ArgumentParser {
@@ -95,7 +91,7 @@ namespace ArgumentParser {
             if(term.starts_with("--")) {
                 positional_argument = nullptr;
                 Argument* parameter;
-                int position_of_equal = term.find('=');
+                size_t position_of_equal = term.find('=');
                 std::string_view parameter_value = term.substr(position_of_equal + 1, term.size() - position_of_equal);
                 if(position_of_equal == -1) {
                     parameter = FindArgument('\0', std::string(term.substr(2, term.size() - 2)));
