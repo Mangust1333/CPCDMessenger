@@ -73,3 +73,6 @@
 /cmake-build-debug/.cmake/api/v1/query/toolchains-v1
 /cmake-build-debug/.cmake/api/v1/reply/toolchains-v1-8c2a3eda20d7af1b72d4.json
 /.idea/vcs.xml
+/cmake-build-debug/.cmake/api/v1/reply/codemodel-v2-8cedec5fad2d449379fa.json
+/cmake-build-debug/.cmake/api/v1/reply/index-2025-08-17T17-33-58-0120.json
+/cmake-build-debug/.cmake/api/v1/reply/target-Messenger-Debug-1fd1b619d083fad7a702.json

@@ -13,3 +13,7 @@ set(CMAKE_CXX_STANDARD 23)
 add_subdirectory(text_lib)
 add_subdirectory(parser_lib)
 add_subdirectory(bin)
+
+if (WIN32)
+    target_link_libraries(Messenger PRIVATE ws2_32)
+endif()

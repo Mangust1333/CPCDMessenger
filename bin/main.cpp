@@ -1,29 +1,26 @@
-#include <functional>
-#include <argument_parser.h>
-#include <text_parser_lib.h>
-
 #include <iostream>
 #include <fstream>
-#include <numeric>
-#include <chrono>
+#include <thread>
+#include <vector>
+#include <stdexcept>
+#include <cstring>
+
+#include <argument_parser.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include "text_parser_lib.h"
+
 #pragma comment(lib, "ws2_32.lib")
 using socket_t = SOCKET;
 #define CLOSESOCK closesocket
 #else
-#include <netinet/in.h>
-  #include <arpa/inet.h>
-  #include <unistd.h>
-  using socket_t = int;
-  #define CLOSESOCK close
-#endif
-
-#include <cstring>
-#include <stdexcept>
+#include <arpa/inet.h>
 #include <unistd.h>
+using socket_t = int;
+#define CLOSESOCK close
+#endif
 
 constexpr int PORT = 5000;
 constexpr int BLOCK_SIZE = 1024;
@@ -43,103 +40,133 @@ void cleanupSockets() {
 #endif
 }
 
-void runSender(const std::string& inputPath, const std::string& host) {
-    socket_t sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) throw std::runtime_error("Socket creation failed");
 
-    sockaddr_in serv_addr{};
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
-    if (inet_pton(AF_INET, host.c_str(), &serv_addr.sin_addr) <= 0) {
-        throw std::runtime_error("Invalid address: " + host);
+void forward(socket_t from, socket_t to) {
+    char buffer[BLOCK_SIZE];
+    while (true) {
+        int n = recv(from, buffer, sizeof(buffer), 0);
+        if (n <= 0) break;
+        send(to, buffer, n, 0);
+    }
+    CLOSESOCK(from);
+    CLOSESOCK(to);
+}
+
+void runRelay() {
+    socket_t server = socket(AF_INET, SOCK_STREAM, 0);
+    if (server < 0) throw std::runtime_error("socket failed");
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(server, (sockaddr*)&addr, sizeof(addr)) < 0)
+        throw std::runtime_error("bind failed");
+    if (listen(server, 2) < 0)
+        throw std::runtime_error("listen failed");
+
+    std::cout << "Relay server listening on port " << PORT << "...\n";
+
+
+    sockaddr_in caddr{};
+    socklen_t clen = sizeof(caddr);
+    socket_t receiver = accept(server, (sockaddr*)&caddr, &clen);
+    if (receiver < 0) throw std::runtime_error("accept receiver failed");
+    std::cout << "Receiver connected\n";
+
+
+    socket_t sender = accept(server, (sockaddr*)&caddr, &clen);
+    if (sender < 0) throw std::runtime_error("accept sender failed");
+    std::cout << "Sender connected\n";
+
+
+    std::thread t1(forward, sender, receiver);
+    std::thread t2(forward, receiver, sender);
+    t1.join();
+    t2.join();
+
+    CLOSESOCK(server);
+    std::cout << "Relay finished\n";
+}
+
+
+void runReceiver(const std::string& outputPath, const std::string& relayHost) {
+    socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) throw std::runtime_error("socket failed");
+
+    sockaddr_in serv{};
+    serv.sin_family = AF_INET;
+    serv.sin_port = htons(PORT);
+    inet_pton(AF_INET, relayHost.c_str(), &serv.sin_addr);
+
+    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0)
+        throw std::runtime_error("connect failed (receiver)");
+
+    std::ofstream outFile(outputPath, std::ios::binary);
+    if (!outFile) throw std::runtime_error("open output file failed");
+
+    char buffer[BLOCK_SIZE];
+    while (true) {
+        int n = recv(sock, buffer, sizeof(buffer), 0);
+        if (n <= 0) break;
+        outFile.write(buffer, n);
     }
 
-    if (connect(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        throw std::runtime_error("Connection failed");
-    }
+    CLOSESOCK(sock);
+    outFile.close();
+    std::cout << "Файл сохранён в " << outputPath << "\n";
+}
+
+
+void runSender(const std::string& inputPath, const std::string& relayHost) {
+    socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) throw std::runtime_error("socket failed");
+
+    sockaddr_in serv{};
+    serv.sin_family = AF_INET;
+    serv.sin_port = htons(PORT);
+    inet_pton(AF_INET, relayHost.c_str(), &serv.sin_addr);
+
+    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0)
+        throw std::runtime_error("connect failed (sender)");
+
+    std::ifstream inFile(inputPath, std::ios::binary);
+    if (!inFile) throw std::runtime_error("Failed to open input file: " + inputPath);
 
     FileParser::FileBlockIterator begin(inputPath, BLOCK_SIZE);
     FileParser::FileBlockIterator end(inputPath, BLOCK_SIZE, true);
 
     while (begin != end) {
-        size_t blockSize = begin->size();
-        if (send(sockfd, reinterpret_cast<const char*>(&blockSize), sizeof(blockSize), 0) <= 0) break;
-        if (send(sockfd, begin->data(), (int)blockSize, 0) <= 0) break;
+        send(sock, begin->data(), (int)begin->size(), 0);
         ++begin;
     }
 
-    size_t zero = 0;
-    send(sockfd, reinterpret_cast<const char*>(&zero), sizeof(zero), 0);
-
-    CLOSESOCK(sockfd);
-    std::cout << "Файл " << inputPath << " успешно отправлен." << std::endl;
-}
-
-void runReceiver(const std::string& outputPath) {
-    socket_t server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) throw std::runtime_error("Socket creation failed");
-
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-
-    if (bind(server_fd, (sockaddr*)&address, sizeof(address)) < 0) {
-        throw std::runtime_error("Bind failed");
-    }
-
-    if (listen(server_fd, 1) < 0) {
-        throw std::runtime_error("Listen failed");
-    }
-
-    std::cout << "Ожидание подключения..." << std::endl;
-    socklen_t addrlen = sizeof(address);
-    socket_t sock = accept(server_fd, (sockaddr*)&address, &addrlen);
-    if (sock < 0) throw std::runtime_error("Accept failed");
-
-    std::ofstream outFile(outputPath, std::ios::binary);
-    if (!outFile) throw std::runtime_error("Failed to open output file: " + outputPath);
-
-    while (true) {
-        size_t blockSize;
-        int bytes = recv(sock, reinterpret_cast<char*>(&blockSize), sizeof(blockSize), MSG_WAITALL);
-        if (bytes <= 0 || blockSize == 0) break;
-
-        std::vector<char> buffer(blockSize);
-        int received = recv(sock, buffer.data(), (int)blockSize, MSG_WAITALL);
-        if (received <= 0) break;
-
-        outFile.write(buffer.data(), received);
-    }
-
     CLOSESOCK(sock);
-    CLOSESOCK(server_fd);
-    outFile.close();
-
-    std::cout << "Файл успешно сохранён в " << outputPath << std::endl;
+    inFile.close();
+    std::cout << "Файл отправлен\n";
 }
+
 
 int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
 
+    std::string mode;
     std::string inputPath;
     std::string outputPath;
-    std::string mode;
-    std::string host = "127.0.0.1";
+    std::string relayHost;
 
-    ArgumentParser::ArgParser parser("FileTransfer");
-
-    parser.AddStringArgument('m', "mode", "sender or receiver").StoreValue(mode);
-    parser.AddStringArgument('p', "path", "path to input/output file").StoreValue(inputPath);
-    parser.AddStringArgument('o', "output", "output file path (receiver only)").StoreValue(outputPath);
-    parser.AddStringArgument('H', "host", "server host (sender only)").StoreValue(host);
-    parser.AddHelp('h', "help", "File transfer utility");
+    ArgumentParser::ArgParser parser("FileTransferRelay");
+    parser.AddStringArgument('m', "mode", "relay | sender | receiver").StoreValue(mode).Default("relay");
+    parser.AddStringArgument('p', "path", "path to input file (sender only)").StoreValue(inputPath);
+    parser.AddStringArgument('o', "output", "path to output file (receiver only)").StoreValue(outputPath);
+    parser.AddStringArgument('H', "host", "relay host (for sender/receiver)").StoreValue(relayHost).Default("127.0.0.1");
+    parser.AddHelp('h', "help", "File transfer utility with relay server");
 
     if (!parser.Parse(argc, argv)) {
         std::cerr << "Invalid arguments\n" << parser.HelpDescription() << std::endl;
         return 1;
     }
-
     if (parser.Help()) {
         std::cout << parser.HelpDescription() << std::endl;
         return 0;
@@ -147,15 +174,19 @@ int main(int argc, char** argv) {
 
     try {
         initSockets();
-        if (mode == "sender") {
-            if (inputPath.empty()) throw std::runtime_error("Missing input path");
-            runSender(inputPath, host);
+
+        if (mode == "relay") {
+            runRelay();
         } else if (mode == "receiver") {
             if (outputPath.empty()) throw std::runtime_error("Missing output path");
-            runReceiver(outputPath);
+            runReceiver(outputPath, relayHost);
+        } else if (mode == "sender") {
+            if (inputPath.empty()) throw std::runtime_error("Missing input path");
+            runSender(inputPath, relayHost);
         } else {
-            throw std::runtime_error("Mode must be 'sender' or 'receiver'");
+            throw std::runtime_error("Unknown mode: " + mode);
         }
+
         cleanupSockets();
     } catch (const std::exception& ex) {
         std::cerr << "Ошибка: " << ex.what() << std::endl;
