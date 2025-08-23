@@ -1,167 +1,97 @@
+#include <boost/asio.hpp>
 #include <iostream>
-#include <fstream>
 #include <thread>
-#include <vector>
-#include <stdexcept>
-#include <cstring>
+#include <string>
+#include "Connection/connection_lib.h"
+#include "argument_parser.h"
+#include <nlohmann/json.hpp>
 
-#include <argument_parser.h>
+using boost::asio::ip::tcp;
+using json = nlohmann::json;
 
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include "text_parser_lib.h"
+void run_server(unsigned short port) {
+    try {
+        boost::asio::io_context ioc{1};
+        Server server(ioc, port);
+        std::cout << "Relay server running on port " << port << "\n";
 
-#pragma comment(lib, "ws2_32.lib")
-using socket_t = SOCKET;
-#define CLOSESOCK closesocket
-#else
-#include <arpa/inet.h>
-#include <unistd.h>
-using socket_t = int;
-#define CLOSESOCK close
-#endif
-
-constexpr int PORT = 5000;
-constexpr int BLOCK_SIZE = 1024;
-
-void initSockets() {
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2,2), &wsa) != 0) {
-        throw std::runtime_error("WSAStartup failed");
+        unsigned int nthreads = std::max(1u, std::thread::hardware_concurrency());
+        std::vector<std::thread> threads;
+        for (unsigned int i = 0; i < nthreads - 1; ++i) {
+            threads.emplace_back([&ioc]{ ioc.run(); });
+        }
+        ioc.run();
+        for (auto &t : threads) t.join();
+    } catch (std::exception& ex) {
+        std::cerr << "Server fatal: " << ex.what() << "\n";
     }
-#endif
 }
 
-void cleanupSockets() {
-#ifdef _WIN32
-    WSACleanup();
-#endif
-}
+void run_client(const std::string& host, unsigned short port) {
+    boost::asio::io_context ioc;
+    auto client = std::make_shared<ConsoleClient>(ioc, host, port);
+    client->start();
 
+    // Запускаем ioc в отдельном потоке
+    std::thread ioc_thread([&ioc]{ ioc.run(); });
 
-void forward(socket_t from, socket_t to) {
-    char buffer[BLOCK_SIZE];
+    std::cout << "Console client. Команды:\n";
+    std::cout << "  /login <username>\n";
+    std::cout << "  /msg <to> <message>\n";
+    std::cout << "  /quit\n";
+    std::cout << "Чтобы отправить сообщение без команды, используйте: /msg <to> <message>\n";
+
+    std::string line;
     while (true) {
-        int n = recv(from, buffer, sizeof(buffer), 0);
-        if (n <= 0) break;
-        send(to, buffer, n, 0);
-    }
-    CLOSESOCK(from);
-    CLOSESOCK(to);
-}
+        std::cout << "> " << std::flush;
+        if (!std::getline(std::cin, line)) break;
+        if (line.empty()) continue;
 
-void runRelay() {
-    socket_t server = socket(AF_INET, SOCK_STREAM, 0);
-    if (server < 0) throw std::runtime_error("socket failed");
+        size_t first_non = line.find_first_not_of(" \t");
+        if (first_non == std::string::npos) continue;
+        if (first_non > 0) line = line.substr(first_non);
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
-    addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (bind(server, (sockaddr*)&addr, sizeof(addr)) < 0)
-        throw std::runtime_error("bind failed");
-    if (listen(server, 2) < 0)
-        throw std::runtime_error("listen failed");
-
-    std::cout << "Relay server listening on port " << PORT << "...\n";
-
-
-    sockaddr_in caddr{};
-    socklen_t clen = sizeof(caddr);
-    socket_t receiver = accept(server, (sockaddr*)&caddr, &clen);
-    if (receiver < 0) throw std::runtime_error("accept receiver failed");
-    std::cout << "Receiver connected\n";
-
-
-    socket_t sender = accept(server, (sockaddr*)&caddr, &clen);
-    if (sender < 0) throw std::runtime_error("accept sender failed");
-    std::cout << "Sender connected\n";
-
-
-    std::thread t1(forward, sender, receiver);
-    std::thread t2(forward, receiver, sender);
-    t1.join();
-    t2.join();
-
-    CLOSESOCK(server);
-    std::cout << "Relay finished\n";
-}
-
-
-void runReceiver(const std::string& outputPath, const std::string& relayHost) {
-    socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) throw std::runtime_error("socket failed");
-
-    sockaddr_in serv{};
-    serv.sin_family = AF_INET;
-    serv.sin_port = htons(PORT);
-    inet_pton(AF_INET, relayHost.c_str(), &serv.sin_addr);
-
-    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0)
-        throw std::runtime_error("connect failed (receiver)");
-
-    std::ofstream outFile(outputPath, std::ios::binary);
-    if (!outFile) throw std::runtime_error("open output file failed");
-
-    char buffer[BLOCK_SIZE];
-    while (true) {
-        int n = recv(sock, buffer, sizeof(buffer), 0);
-        if (n <= 0) break;
-        outFile.write(buffer, n);
+        if (line.rfind("/login ", 0) == 0) {
+            std::string user = line.substr(7);
+            client->send_login(user);
+        } else if (line.rfind("/msg ", 0) == 0) {
+            std::string rest = line.substr(5);
+            std::istringstream iss(rest);
+            std::string to;
+            if (!(iss >> to)) {
+                std::cout << "Usage: /msg <to> <message>\n";
+                continue;
+            }
+            std::string body;
+            std::getline(iss, body);
+            if (!body.empty() && body[0] == ' ') body.erase(0,1);
+            client->send_message(to, body);
+        } else if (line == "/quit") {
+            break;
+        } else if (line == "/help") {
+            std::cout << "Команды: /login /msg /quit /help\n";
+        } else {
+            std::cout << "Неизвестная команда. Введите /help.\n";
+        }
     }
 
-    CLOSESOCK(sock);
-    outFile.close();
-    std::cout << "Файл сохранён в " << outputPath << "\n";
+    client->stop();
+    ioc.stop();
+    if (ioc_thread.joinable()) ioc_thread.join();
 }
-
-
-void runSender(const std::string& inputPath, const std::string& relayHost) {
-    socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) throw std::runtime_error("socket failed");
-
-    sockaddr_in serv{};
-    serv.sin_family = AF_INET;
-    serv.sin_port = htons(PORT);
-    inet_pton(AF_INET, relayHost.c_str(), &serv.sin_addr);
-
-    if (connect(sock, (sockaddr*)&serv, sizeof(serv)) < 0)
-        throw std::runtime_error("connect failed (sender)");
-
-    std::ifstream inFile(inputPath, std::ios::binary);
-    if (!inFile) throw std::runtime_error("Failed to open input file: " + inputPath);
-
-    FileParser::FileBlockIterator begin(inputPath, BLOCK_SIZE);
-    FileParser::FileBlockIterator end(inputPath, BLOCK_SIZE, true);
-
-    while (begin != end) {
-        send(sock, begin->data(), (int)begin->size(), 0);
-        ++begin;
-    }
-
-    CLOSESOCK(sock);
-    inFile.close();
-    std::cout << "Файл отправлен\n";
-}
-
 
 int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
 
-    std::string mode;
-    std::string inputPath;
-    std::string outputPath;
-    std::string relayHost;
+    std::string mode = "server";
+    std::string host = "127.0.0.1";
+    int port_int = 5555;
 
-    ArgumentParser::ArgParser parser("FileTransferRelay");
-    parser.AddStringArgument('m', "mode", "relay | sender | receiver").StoreValue(mode).Default("relay");
-    parser.AddStringArgument('p', "path", "path to input file (sender only)").StoreValue(inputPath);
-    parser.AddStringArgument('o', "output", "path to output file (receiver only)").StoreValue(outputPath);
-    parser.AddStringArgument('H', "host", "relay host (for sender/receiver)").StoreValue(relayHost).Default("127.0.0.1");
-    parser.AddHelp('h', "help", "File transfer utility with relay server");
+    ArgumentParser::ArgParser parser("MessengerRelay");
+    parser.AddStringArgument('m', "mode", "server | client").StoreValue(mode).Default("server");
+    parser.AddStringArgument('H', "host", "relay host").StoreValue(host).Default("127.0.0.1");
+    parser.AddIntArgument('P', "port", "relay port").StoreValue(port_int).Default(5555);
+    parser.AddHelp('h', "help", "Messenger with relay server");
 
     if (!parser.Parse(argc, argv)) {
         std::cerr << "Invalid arguments\n" << parser.HelpDescription() << std::endl;
@@ -172,25 +102,24 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (port_int < 0 || port_int > 65535) {
+        std::cerr << "Invalid port: " << port_int << std::endl;
+        return 1;
+    }
+    unsigned short port = static_cast<unsigned short>(port_int);
+
     try {
-        initSockets();
-
-        if (mode == "relay") {
-            runRelay();
-        } else if (mode == "receiver") {
-            if (outputPath.empty()) throw std::runtime_error("Missing output path");
-            runReceiver(outputPath, relayHost);
-        } else if (mode == "sender") {
-            if (inputPath.empty()) throw std::runtime_error("Missing input path");
-            runSender(inputPath, relayHost);
+        if (mode == "server" || mode == "relay") {
+            run_server(port);
+        } else if (mode == "client") {
+            run_client(host, port);
         } else {
-            throw std::runtime_error("Unknown mode: " + mode);
+            std::cerr << "Unknown mode: " << mode << "\n";
+            std::cerr << parser.HelpDescription() << std::endl;
+            return 1;
         }
-
-        cleanupSockets();
     } catch (const std::exception& ex) {
-        std::cerr << "Ошибка: " << ex.what() << std::endl;
-        cleanupSockets();
+        std::cerr << "Error: " << ex.what() << std::endl;
         return 1;
     }
 
