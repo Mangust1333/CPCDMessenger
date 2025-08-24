@@ -82,6 +82,8 @@ void run_client(const std::string& host, unsigned short port) {
 
 int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
 
     std::string mode = "server";
     std::string host = "127.0.0.1";

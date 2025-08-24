@@ -31,5 +31,5 @@ add_subdirectory(bin)
 target_link_libraries(Messenger PRIVATE OpenSSL::SSL OpenSSL::Crypto Boost::system Boost::asio nlohmann_json::nlohmann_json)
 
 if(WIN32)
-    target_link_libraries(Messenger PRIVATE ws2_32)
+    target_link_libraries(Messenger PRIVATE ws2_32 mswsock)
 endif()
