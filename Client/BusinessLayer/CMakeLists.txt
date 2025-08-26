@@ -1,0 +1,19 @@
+add_library(
+        ClientBusinessLayer
+        domain/User.h
+        domain/Chat.h
+        domain/ChatType.h
+        domain/Message.h
+        domain/Message.h
+        services/AuthService.cpp
+        services/AuthService.h
+        services/ChatService.cpp
+        services/ChatService.h
+        services/FileTransferService.cpp
+        services/FileTransferService.h
+        contracts/IChatRepository.h
+        contracts/INetworkClient.h
+        contracts/IUserRepository.h
+        domain/FileTransfer.h
+)
+target_link_libraries(ClientBusinessLayer PRIVATE Boost::uuid)

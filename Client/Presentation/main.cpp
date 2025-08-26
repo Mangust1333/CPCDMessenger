@@ -2,9 +2,11 @@
 #include <iostream>
 #include <thread>
 #include <string>
-#include "Connection/connection_lib.h"
+#include "../Infrastructure/network/ClientSession.h"
+#include "../Infrastructure/network/ConsoleClient.h"
+#include "../Infrastructure/network/Server.h"
 #include "argument_parser.h"
-#include <nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 
 using boost::asio::ip::tcp;
 using json = nlohmann::json;

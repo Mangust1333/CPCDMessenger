@@ -1,0 +1,9 @@
+#ifndef MESSENGERSERVER_CHATTYPE_H
+#define MESSENGERSERVER_CHATTYPE_H
+
+enum class ChatType {
+    GROUP,
+    DIRECT
+};
+
+#endif //MESSENGERSERVER_CHATTYPE_H
