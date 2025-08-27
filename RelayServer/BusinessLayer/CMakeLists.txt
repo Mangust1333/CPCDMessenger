@@ -20,6 +20,10 @@ add_library(
         repository/ICredentialRepository.h
         domain/Credential.h
         contracts/IPasswordHasher.h
+        services/ChatService/ChatService.cpp
+        services/ChatService/ChatService.h
+        services/ChatService/IChatService.h
+        repository/IMessageRepository.h
 )
 
 target_link_libraries(RelayServerCore PRIVATE Boost::uuid jwt-cpp::jwt-cpp nlohmann_json::nlohmann_json)
