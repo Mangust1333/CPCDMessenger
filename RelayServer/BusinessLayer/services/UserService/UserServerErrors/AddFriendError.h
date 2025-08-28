@@ -1,7 +1,7 @@
 #ifndef CPCDMESSENGER_ADDFRIENDERROR_H
 #define CPCDMESSENGER_ADDFRIENDERROR_H
 
-enum AddFriendError {
+enum class AddFriendError {
     UsersAlreadyFriends,
     UserDoNotExists,
     DatabaseFailure

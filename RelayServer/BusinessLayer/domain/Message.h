@@ -7,7 +7,7 @@
 
 struct Message {
     boost::uuids::uuid id;
-    boost::uuids::uuid UUID;
+    boost::uuids::uuid chatId;
     boost::uuids::uuid senderId;
     std::string body;
     std::chrono::system_clock::time_point createdAt;

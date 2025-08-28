@@ -24,6 +24,13 @@ add_library(
         services/ChatService/ChatService.h
         services/ChatService/IChatService.h
         repository/IMessageRepository.h
+        repository/IChatRepository.h
+        services/ChatService/ChatServiceErrors/CreateChatError.h
+        services/ChatService/ChatServiceErrors/CreateChatError.h
+        services/MessageService/IMessageService.h
+        services/MessageService/MessageService.h
+        services/MessageService/MessageService.cpp
+        services/MessageService/MessageService.h
 )
 
 target_link_libraries(RelayServerCore PRIVATE Boost::uuid jwt-cpp::jwt-cpp nlohmann_json::nlohmann_json)
